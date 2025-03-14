@@ -1,103 +1,186 @@
-import Image from "next/image";
+"use client";
+
+import { useSession, signIn, signOut } from "next-auth/react";
+import { useEffect, useState } from "react";
+import { LinearClient } from "@linear/sdk";
+import { ActivityCalendar } from "react-activity-calendar";
+
+interface ActivityData {
+  date: string;
+  count: number;
+  level: number;
+}
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const { data: session, status } = useSession();
+  const [activityData, setActivityData] = useState<ActivityData[]>([]);
+  const [loading, setLoading] = useState(false);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  useEffect(() => {
+    async function fetchLinearActivity() {
+      if (!session?.accessToken) return;
+
+      setLoading(true);
+      try {
+        const linearClient = new LinearClient({
+          accessToken: session.accessToken,
+        });
+
+        // Get user's activities for the last 365 days
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - 365);
+
+        const me = await linearClient.viewer;
+        const myIssues = await me?.assignedIssues();
+
+        console.log("[myIssues]", JSON.stringify(myIssues));
+        myIssues.nodes.forEach((issue) => {
+          console.log("------");
+          console.log("[issue]", JSON.stringify(issue));
+          const history = issue.history;
+          console.log("[history]", JSON.stringify(history));
+        });
+
+        // Fetch user's issues and comments
+        const [issues, comments] = await Promise.all([
+          linearClient.issues({
+            filter: {
+              createdAt: {
+                gte: startDate.toISOString(),
+                lte: endDate.toISOString(),
+              },
+            },
+            first: 100,
+            includeArchived: true,
+          }),
+          linearClient.comments({
+            filter: {
+              createdAt: {
+                gte: startDate.toISOString(),
+                lte: endDate.toISOString(),
+              },
+            },
+          }),
+        ]);
+
+        // Process activities into daily counts
+        const dailyCounts = new Map<string, number>();
+
+        // Initialize counts for all days in the last 365 days
+        for (let i = 0; i < 365; i++) {
+          const date = new Date(startDate);
+          date.setDate(startDate.getDate() + i);
+          dailyCounts.set(date.toISOString().split("T")[0], 0);
+        }
+
+        // Count issues and get their activity
+        for (const issue of issues.nodes) {
+          const date = new Date(issue.createdAt).toISOString().split("T")[0];
+          dailyCounts.set(date, (dailyCounts.get(date) || 0) + 1);
+        }
+
+        // Count comments
+        comments.nodes.forEach((comment) => {
+          const date = new Date(comment.createdAt).toISOString().split("T")[0];
+          dailyCounts.set(date, (dailyCounts.get(date) || 0) + 1);
+        });
+
+        // Convert to array format for the chart
+        const chartData = Array.from(dailyCounts.entries())
+          .map(([date, count]) => ({
+            date,
+            count,
+          }))
+          .sort((a, b) => a.date.localeCompare(b.date));
+
+        setActivityData(
+          chartData.map(({ date, count }) => ({
+            date,
+            count,
+            level: Math.min(Math.floor(count / 2), 4) as 0 | 1 | 2 | 3 | 4,
+          }))
+        );
+      } catch (error) {
+        console.error("Error fetching Linear activity:", error);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    if (session?.accessToken) {
+      fetchLinearActivity();
+    }
+  }, [session?.accessToken]);
+
+  if (status === "loading") {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        Loading...
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen gap-4">
+        <h1 className="text-2xl font-bold">Linear Activity Graph</h1>
+        <button
+          onClick={() => signIn("linear")}
+          className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+        >
+          Sign in with Linear
+        </button>
+      </div>
+    );
+  }
+
+  if (activityData.length > 0) {
+    console.log("[activityData]", JSON.stringify(activityData));
+  }
+
+  return (
+    <div className="container mx-auto p-4">
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-2xl font-bold">Your Linear Activity</h1>
+        <button
+          onClick={() => signOut()}
+          className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
+        >
+          Sign Out
+        </button>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center h-96">
+          Loading activity data...
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+      ) : (
+        <div className="h-auto w-full flex justify-center p-4 rounded-lg">
+          {activityData.length > 0 ? (
+            <ActivityCalendar
+              data={activityData.map(({ date, count }) => ({
+                date,
+                count,
+                level: Math.min(Math.floor(count / 2), 4) as 0 | 1 | 2 | 3 | 4,
+              }))}
+              labels={{
+                totalCount: "{{count}} contributions in the last year",
+              }}
+              style={{
+                maxWidth: "100%",
+              }}
+              totalCount={activityData.reduce(
+                (sum, data) => sum + data.count,
+                0
+              )}
+              showWeekdayLabels
+            />
+          ) : (
+            <p>waiting for data</p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
